@@ -13,36 +13,28 @@ use common::target::*;
 use common::test_dir::*;
 use common::thin::*;
 
-use thinp::tools_version;
-
 //------------------------------------------
 
-const USAGE: &str = concat!(
-    "thin_dump ",
-    tools_version!(),
-    "
-Dump thin-provisioning metadata to stdout in XML format
+const USAGE: &str = "Dump thin-provisioning metadata to stdout in XML format
 
-USAGE:
-    thin_dump [OPTIONS] <INPUT>
+Usage: thin_dump [OPTIONS] <INPUT>
 
-ARGS:
-    <INPUT>    Specify the input device to dump
+Arguments:
+  <INPUT>  Specify the input device to dump
 
-OPTIONS:
-        --data-block-size <SECTORS>       Provide the data block size for repairing
-        --dev-id <THIN_ID>                Dump the specified device
-    -f, --format <TYPE>                   Choose the output format
-    -h, --help                            Print help information
-    -m, --metadata-snap[=<BLOCKNR>...]    Access the metadata snapshot on a live pool
-        --nr-data-blocks <NUM>            Override the number of data blocks if needed
-    -o, --output <FILE>                   Specify the output file rather than stdout
-    -q, --quiet                           Suppress output messages, return only exit code.
-    -r, --repair                          Repair the metadata whilst dumping it
-        --skip-mappings                   Do not dump the mappings
-        --transaction-id <NUM>            Override the transaction id if needed
-    -V, --version                         Print version information"
-);
+Options:
+      --data-block-size <SECTORS>  Provide the data block size for repairing
+      --dev-id <THIN_ID>           Dump the specified device
+  -f, --format <TYPE>              Choose the output format
+  -h, --help                       Print help
+  -m, --metadata-snap[=<BLOCKNR>]  Access the metadata snapshot on a live pool
+      --nr-data-blocks <NUM>       Override the number of data blocks if needed
+  -o, --output <FILE>              Specify the output file rather than stdout
+  -q, --quiet                      Suppress output messages, return only exit code.
+  -r, --repair                     Repair the metadata whilst dumping it
+      --skip-mappings              Do not dump the mappings
+      --transaction-id <NUM>       Override the transaction id if needed
+  -V, --version                    Print version";
 
 //-----------------------------------------
 
@@ -225,6 +217,29 @@ fn repair_healthy_metadata() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn repair_metadata_with_empty_roots() -> Result<()> {
+    let mut td = TestDir::new()?;
+
+    // use the metadata containing empty roots
+    let md = prep_metadata_from_file(&mut td, "tmeta_with_empty_roots.pack")?;
+    let before = run_ok_raw(thin_dump_cmd(args![&md]))?;
+
+    // repairing dump
+    damage_superblock(&md)?;
+    let after = run_ok_raw(thin_dump_cmd(args![
+        "--repair",
+        "--transaction-id=2",
+        "--data-block-size=128",
+        "--nr-data-blocks=1024",
+        &md
+    ]))?;
+
+    assert_eq!(before.stdout, after.stdout);
+
+    Ok(())
+}
+
 //------------------------------------------
 // test compatibility between options
 // TODO: share with thin_repair
@@ -241,6 +256,8 @@ fn recovers_transaction_id_from_damaged_superblock() -> Result<()> {
         &md
     ]))?;
     assert!(stdout.contains("transaction=\"1\""));
+    assert!(stdout.contains("data_block_size=\"128\""));
+    assert!(stdout.contains("nr_data_blocks=\"20480\""));
     Ok(())
 }
 
@@ -266,11 +283,51 @@ fn recovers_nr_data_blocks_from_damaged_superblock() -> Result<()> {
     damage_superblock(&md)?;
     let stdout = run_ok(thin_dump_cmd(args![
         "--repair",
-        "--transaction-id=1",
+        "--transaction-id=10",
         "--data-block-size=128",
         &md
     ]))?;
+    assert!(stdout.contains("transaction=\"10\""));
+    assert!(stdout.contains("data_block_size=\"128\""));
     assert!(stdout.contains("nr_data_blocks=\"1024\""));
+    Ok(())
+}
+
+#[test]
+fn recovers_tid_and_nr_data_blocks_from_damaged_superblock() -> Result<()> {
+    let mut td = TestDir::new()?;
+    let md = mk_valid_md(&mut td)?;
+    damage_superblock(&md)?;
+    let stdout = run_ok(thin_dump_cmd(args![
+        "--repair",
+        "--data-block-size=128",
+        &md
+    ]))?;
+    assert!(stdout.contains("transaction=\"1\""));
+    assert!(stdout.contains("data_block_size=\"128\""));
+    assert!(stdout.contains("nr_data_blocks=\"1024\""));
+    Ok(())
+}
+
+#[test]
+fn repair_metadata_with_stale_superblock() -> Result<()> {
+    let mut td = TestDir::new()?;
+    let md = mk_valid_md(&mut td)?;
+    let before = run_ok_raw(thin_dump_cmd(args![&md]))?;
+
+    // produce stale superblock by overriding the data mapping root,
+    // then update the superblock checksum.
+    run_ok(thin_generate_damage_cmd(args![
+        "-o",
+        &md,
+        "--override",
+        "--mapping-root",
+        "10"
+    ]))?;
+
+    let after = run_ok_raw(thin_dump_cmd(args!["--repair", &md]))?;
+    assert_eq!(before.stdout, after.stdout);
+
     Ok(())
 }
 

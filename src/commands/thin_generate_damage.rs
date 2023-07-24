@@ -1,4 +1,4 @@
-use clap::{Arg, ArgGroup};
+use clap::{value_parser, Arg, ArgAction, ArgGroup};
 use std::path::Path;
 use std::process;
 
@@ -12,36 +12,67 @@ use crate::commands::Command;
 pub struct ThinGenerateDamageCommand;
 
 impl ThinGenerateDamageCommand {
-    fn cli<'a>(&self) -> clap::Command<'a> {
+    fn cli(&self) -> clap::Command {
         let cmd = clap::Command::new(self.name())
-            .color(clap::ColorChoice::Never)
+            .next_display_order(None)
             .version(crate::tools_version!())
             .about("A tool for creating synthetic thin metadata.")
             .arg(
                 Arg::new("CREATE_METADATA_LEAKS")
                     .help("Create leaked metadata blocks")
                     .long("create-metadata-leaks")
-                    .requires_all(&["EXPECTED", "ACTUAL", "NR_BLOCKS"])
-                    .group("commands"),
+                    .action(ArgAction::SetTrue)
+                    .requires_all(["EXPECTED", "ACTUAL", "NR_BLOCKS"]),
+            )
+            .arg(
+                Arg::new("OVERRIDE")
+                    .help("override metadata fields")
+                    .long("override")
+                    .action(ArgAction::SetTrue)
+                    .requires("overrides"),
             )
             // options
             .arg(
                 Arg::new("EXPECTED")
                     .help("The expected reference count of damaged blocks")
                     .long("expected")
-                    .value_name("REFCONT"),
+                    .value_name("REFCONT")
+                    .value_parser(value_parser!(u32)),
             )
             .arg(
                 Arg::new("ACTUAL")
                     .help("The actual reference count of damaged blocks")
                     .long("actual")
-                    .value_name("REFCOUNT"),
+                    .value_name("REFCOUNT")
+                    .value_parser(value_parser!(u32)),
             )
             .arg(
                 Arg::new("NR_BLOCKS")
                     .help("Specify the number of metadata blocks")
                     .long("nr-blocks")
-                    .value_name("NUM"),
+                    .value_name("NUM")
+                    .value_parser(value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("MAPPING_ROOT")
+                    .help("Specify the data mapping root")
+                    .long("mapping-root")
+                    .value_name("BLOCKNR")
+                    .value_parser(value_parser!(u64)),
+            )
+            .arg(
+                Arg::new("DETAILS_ROOT")
+                    .help("Specify the device details root")
+                    .long("details-root")
+                    .value_name("BLOCKNR")
+                    .value_parser(value_parser!(u64)),
+            )
+            .arg(
+                Arg::new("METADATA_SNAPSHOT")
+                    .help("Specify the device details root")
+                    .long("metadata-snap")
+                    .value_name("BLOCKNR")
+                    .value_parser(value_parser!(u64)),
             )
             .arg(
                 Arg::new("OUTPUT")
@@ -51,7 +82,16 @@ impl ThinGenerateDamageCommand {
                     .value_name("FILE")
                     .required(true),
             )
-            .group(ArgGroup::new("commands").required(true));
+            .group(
+                ArgGroup::new("commands")
+                    .args(["CREATE_METADATA_LEAKS", "OVERRIDE"])
+                    .required(true),
+            )
+            .group(
+                ArgGroup::new("overrides")
+                    .args(["MAPPING_ROOT", "DETAILS_ROOT", "METADATA_SNAPSHOT"])
+                    .multiple(true),
+            );
         engine_args(cmd)
     }
 }
@@ -71,19 +111,27 @@ impl<'a> Command<'a> for ThinGenerateDamageCommand {
             return to_exit_code(&report, engine_opts);
         }
 
-        let opts = ThinDamageOpts {
-            engine_opts: engine_opts.unwrap(),
-            op: if matches.is_present("CREATE_METADATA_LEAKS") {
-                DamageOp::CreateMetadataLeaks {
-                    nr_blocks: matches.value_of_t_or_exit::<usize>("NR_BLOCKS"),
-                    expected_rc: matches.value_of_t_or_exit::<u32>("EXPECTED"),
-                    actual_rc: matches.value_of_t_or_exit::<u32>("ACTUAL"),
-                }
-            } else {
+        let op = match matches.get_one::<clap::Id>("commands").unwrap().as_str() {
+            "CREATE_METADATA_LEAKS" => DamageOp::CreateMetadataLeaks {
+                nr_blocks: *matches.get_one::<usize>("NR_BLOCKS").unwrap(),
+                expected_rc: *matches.get_one::<u32>("EXPECTED").unwrap(),
+                actual_rc: *matches.get_one::<u32>("ACTUAL").unwrap(),
+            },
+            "OVERRIDE" => DamageOp::OverrideSuperblock(SuperblockOverrides {
+                mapping_root: matches.get_one::<u64>("MAPPING_ROOT").copied(),
+                details_root: matches.get_one::<u64>("DETAILS_ROOT").cloned(),
+                metadata_snapshot: matches.get_one::<u64>("METADATA_SNAPSHOT").cloned(),
+            }),
+            _ => {
                 eprintln!("unknown option");
                 process::exit(1);
-            },
-            output: Path::new(matches.value_of("OUTPUT").unwrap()),
+            }
+        };
+
+        let opts = ThinDamageOpts {
+            engine_opts: engine_opts.unwrap(),
+            op,
+            output: Path::new(matches.get_one::<String>("OUTPUT").unwrap()),
         };
 
         to_exit_code(&report, damage_metadata(opts))

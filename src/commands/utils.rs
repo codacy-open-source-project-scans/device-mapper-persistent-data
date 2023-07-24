@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use atty::Stream;
-use clap::ArgMatches;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
@@ -10,6 +9,42 @@ use std::sync::Arc;
 use crate::checksum::{metadata_block_type, BT};
 use crate::file_utils;
 use crate::report::*;
+
+#[cfg(test)]
+mod range_parsing_tests;
+
+//------------------------------------------
+
+#[derive(Clone)]
+pub struct RangeU64 {
+    pub start: u64,
+    pub end: u64,
+}
+
+impl FromStr for RangeU64 {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut iter = s.split("..");
+        let start = iter.next().map_or_else(
+            || Err(anyhow!("badly formed region")),
+            |s| s.parse::<u64>().map_err(|e| e.into()),
+        )?;
+        let end = iter.next().map_or_else(
+            || Err(anyhow!("badly formed region")),
+            |s| s.parse::<u64>().map_err(|e| e.into()),
+        )?;
+        if iter.next().is_some() {
+            return Err(anyhow!("badly formed region"));
+        }
+        if end <= start {
+            return Err(anyhow!("end <= begin"));
+        }
+        Ok(RangeU64 { start, end })
+    }
+}
+
+//------------------------------------------
 
 pub fn check_input_file(input_file: &Path) -> Result<&Path> {
     match file_utils::is_file_or_blk(input_file) {
@@ -123,18 +158,6 @@ pub fn check_overwrite_metadata(report: &Report, path: &Path) -> Result<()> {
     }
 
     Ok(()) // file not found or not a metadata, or 'y' is entered
-}
-
-pub fn optional_value_or_exit<R>(matches: &ArgMatches, name: &str) -> Option<R>
-where
-    R: FromStr,
-    <R as FromStr>::Err: std::fmt::Display,
-{
-    if matches.is_present(name) {
-        Some(matches.value_of_t_or_exit::<R>(name))
-    } else {
-        None
-    }
 }
 
 pub fn to_exit_code<T>(report: &Report, result: anyhow::Result<T>) -> exitcode::ExitCode {
