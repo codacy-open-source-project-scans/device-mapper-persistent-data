@@ -15,53 +15,72 @@ use crate::common::thin_xml_generator::{write_xml, FragmentedS};
 
 type ArgsBuilder = fn(&mut TestDir, &OsStr, &dyn Fn(&[&OsStr]) -> Result<()>) -> Result<()>;
 
-fn with_output_md_untouched(
+fn with_output_md_untouched<'a, P>(
     td: &mut TestDir,
     input: &OsStr,
     thunk: &dyn Fn(&[&OsStr]) -> Result<()>,
-) -> Result<()> {
+) -> Result<()>
+where
+    P: Program<'a>,
+{
     let output = mk_zeroed_md(td)?;
     ensure_untouched(&output, || {
-        let args = args!["-i", input, "-o", &output];
+        let mut args = args!["-i", input, "-o", &output].to_vec();
+        args.extend(P::required_args().iter().map(OsStr::new));
         thunk(&args)
     })
 }
 
-fn with_output_superblock_zeroed(
+fn with_output_superblock_zeroed<'a, P>(
     td: &mut TestDir,
     input: &OsStr,
     thunk: &dyn Fn(&[&OsStr]) -> Result<()>,
-) -> Result<()> {
+) -> Result<()>
+where
+    P: Program<'a>,
+{
     let output = mk_zeroed_md(td)?;
     ensure_superblock_zeroed(&output, || {
-        let args = args!["-i", input, "-o", &output];
+        let mut args = args!["-i", input, "-o", &output].to_vec();
+        args.extend(P::required_args().iter().map(OsStr::new));
         thunk(&args)
     })
 }
 
-fn with_output_simple(
+fn with_output_simple<'a, P>(
     td: &mut TestDir,
     input: &OsStr,
     thunk: &dyn Fn(&[&OsStr]) -> Result<()>,
-) -> Result<()> {
+) -> Result<()>
+where
+    P: Program<'a>,
+{
     let output = mk_zeroed_md(td)?;
-    let args = args!["-i", input, "-o", &output];
+    let mut args = args!["-i", input, "-o", &output].to_vec();
+    args.extend(P::required_args().iter().map(OsStr::new));
     thunk(&args)
 }
 
-fn input_arg_only(
+fn input_arg_only<'a, P>(
     _td: &mut TestDir,
     input: &OsStr,
     thunk: &dyn Fn(&[&OsStr]) -> Result<()>,
-) -> Result<()> {
-    let args = args![input];
+) -> Result<()>
+where
+    P: Program<'a>,
+{
+    let mut args = args![input].to_vec();
+    args.extend(P::required_args().iter().map(OsStr::new));
     thunk(&args)
 }
 
-fn build_args_fn(t: ArgType) -> Result<ArgsBuilder> {
-    match t {
-        ArgType::InputArg => Ok(input_arg_only),
-        ArgType::IoOptions => Ok(with_output_md_untouched),
+fn build_args_fn<'a, P>() -> Result<ArgsBuilder>
+where
+    P: Program<'a>,
+{
+    match P::arg_type() {
+        ArgType::InputArg => Ok(input_arg_only::<P>),
+        ArgType::IoOptions => Ok(with_output_md_untouched::<P>),
     }
 }
 
@@ -72,8 +91,7 @@ pub fn test_missing_input_arg<'a, P>() -> Result<()>
 where
     P: InputProgram<'a>,
 {
-    let args: [&str; 0] = [];
-    let stderr = run_fail(P::cmd(args))?;
+    let stderr = run_fail(P::cmd(P::required_args()))?;
     assert!(stderr.contains(P::missing_input_arg()));
     Ok(())
 }
@@ -95,7 +113,9 @@ where
     let mut td = TestDir::new()?;
     let output = mk_zeroed_md(&mut td)?;
     ensure_untouched(&output, || {
-        let stderr = run_fail(P::cmd(args!["-o", &output]))?;
+        let mut args = args!["-o", &output].to_vec();
+        args.extend(P::required_args().iter().map(OsStr::new));
+        let stderr = run_fail(P::cmd(&args))?;
         assert!(stderr.contains(P::missing_input_arg()));
         Ok(())
     })
@@ -117,7 +137,7 @@ where
 {
     let mut td = TestDir::new()?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, "no-such-file".as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
         assert!(stderr.contains(P::file_not_found()));
@@ -141,7 +161,7 @@ where
 {
     let mut td = TestDir::new()?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, "/tmp".as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
         assert!(stderr.contains("Not a block device or regular file"));
@@ -175,7 +195,7 @@ where
     let input = P::mk_valid_input(&mut td)?;
     duct::cmd!("chmod", "-r", &input).run()?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
         assert!(stderr.contains("Permission denied"));
@@ -205,7 +225,7 @@ where
     let input = td.mk_path("meta.bin");
     file_utils::create_sized_file(&input, 1024)?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
         run_fail(P::cmd(args))?;
         Ok(())
@@ -231,7 +251,7 @@ where
     let input = td.mk_path("meta.bin");
     file_utils::create_sized_file(&input, 1024)?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
         eprintln!("actual: {:?}", stderr);
@@ -261,7 +281,7 @@ where
     let mut gen = FragmentedS::new(4, 10240);
     write_xml(&input, &mut gen)?;
 
-    let wrapper = build_args_fn(P::arg_type())?;
+    let wrapper = build_args_fn::<P>()?;
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
         let msg =
@@ -289,8 +309,8 @@ where
     let input = mk_zeroed_md(&mut td)?;
 
     let wrapper = match P::arg_type() {
-        ArgType::InputArg => input_arg_only,
-        ArgType::IoOptions => with_output_superblock_zeroed,
+        ArgType::InputArg => input_arg_only::<P>,
+        ArgType::IoOptions => with_output_superblock_zeroed::<P>,
     };
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
         let stderr = run_fail(P::cmd(args))?;
@@ -323,8 +343,8 @@ where
     duct::cmd!("chmod", "-w", &input).run()?;
 
     let wrapper = match P::arg_type() {
-        ArgType::InputArg => input_arg_only,
-        ArgType::IoOptions => with_output_simple,
+        ArgType::InputArg => input_arg_only::<P>,
+        ArgType::IoOptions => with_output_simple::<P>,
     };
 
     wrapper(&mut td, input.as_ref(), &|args: &[&OsStr]| {
